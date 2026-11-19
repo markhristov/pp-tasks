@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="bg">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Задача 32 – рекурентна редица</title>
+</head>
+<body>
+<h1>Задача 32</h1>
+<p>a<sub>1</sub> = λ, a<sub>n+1</sub> = F(a<sub>n</sub>), F(x) = (2x² + 68) / (x − 18), λ ≠ 18</p>
+<form id="f">
+<p><label>λ: <input id="lam" value="0"></label></p>
+<p><label>Пет индекса (с интервал): <input id="idx" value="10 100 1000 100000 1000000" size="40"></label></p>
+<p><button type="submit">Изчисли</button></p>
+</form>
+<pre id="out"></pre>
+<script>
+// Fixed-point arithmetic with BigInt: value v represents v / 10^P
+const P = 60n;
+const S = 10n ** P;
+const fx = (n) => BigInt(n) * S;
+const mul = (a, b) => (a * b) / S;
+const div = (a, b) => (a * S) / b;
+const abs = (a) => (a < 0n ? -a : a);
+function isqrt(n) {
+  if (n < 2n) return n;
+  let x = BigInt(Math.floor(Math.sqrt(Number(n))));
+  for (;;) { const y = (x + n / x) >> 1n; if (abs(y - x) <= 1n) { x = y; break; } x = y; }
+  while (x * x > n) x--;
+  while ((x + 1n) * (x + 1n) <= n) x++;
+  return x;
+}
+
+const S13 = isqrt(13n * S * S);
+const P1 = fx(-9) - S13;
+const P2 = fx(-9) + S13;
+const Q = (fx(9) + S13) / 2n;
+const EPS = 10n ** (P - 50n);
+const BIG = 10n ** 65n * S;
+const LOG10_2 = 301029995663981195213738894724493026768189881462108541310427461127n; // ×10^-66
+const LOG2_DIGITS = 66n;
+const LN10 = 2302585092994045684017991454684364207601101488628772976033327900967n; // ×10^-66 after the first digit
+const LN10_DIGITS = 66n;
+
+function F(x) {
+  return div(2n * mul(x, x) + fx(68), x - fx(18));
+}
+
+function parseNum(s) {
+  s = s.trim().replace(",", ".");
+  const m = /^([+-])?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(s);
+  if (!m || (m[2] === "" && (m[3] === undefined || m[3] === ""))) throw new Error("невалидно число: " + s);
+  const neg = m[1] === "-";
+  let digits = (m[2] || "") + (m[3] || "");
+  let exp = -(m[3] || "").length + (m[4] ? parseInt(m[4], 10) : 0);
+  let v = BigInt(digits || "0");
+  let shift = BigInt(exp) + P;
+  v = shift >= 0n ? v * 10n ** shift : v / 10n ** -shift;
+  return neg ? -v : v;
+}
+
+function classify(lam) {
+  if (abs(lam - P1) < EPS || abs(lam - Q) < EPS) return "p1";
+  if (lam > fx(18)) return "+inf";
+  if (lam < P1 || (lam > Q && lam < fx(18))) return "-inf";
+  return "p2";
+}
+
+// Representation of results: {fixed: BigInt} or {sci: {neg, mant: BigInt (×10^-K), K, exp: BigInt}}
+function term(lam, n, kind) {
+  if (n === 1n) return { fixed: lam };
+  if (kind === "p1") return { fixed: P1 };
+  let x = lam, k = 1n;
+  while (k < n) {
+    if (kind === "p2" && abs(x - P2) < EPS) return { fixed: P2 };
+    if ((kind === "+inf" || kind === "-inf") && abs(x) > BIG) {
+      return { sci: doubled(x + fx(36), n - k) }; // (x+36)·2^(n-k) − 36; −36 is far below precision
+    }
+    x = F(x);
+    k++;
+  }
+  return { fixed: x };
+}
+
+// y·2^m in scientific form with ~40 significant digits
+function doubled(y, m) {
+  const neg = y < 0n;
+  y = abs(y);
+  // y = yInt / 10^P ; write y = ym × 10^ye with 1 ≤ ym < 10
+  const ys = y.toString();
+  const ye = BigInt(ys.length) - 1n - P;
+  const K = 60n;
+  let ym = BigInt((ys + "0".repeat(70)).slice(0, Number(K) + 1)); // ×10^-K
+  // 2^m = 10^(m·log10 2) = 10^t × 10^f
+  const L = m * LOG10_2; // ×10^-66
+  const D = 10n ** LOG2_DIGITS;
+  const t = L / D;
+  const f = L % D; // fraction ×10^-66
+  // 10^f = exp(f·ln10), fixed point with W digits
+  const W = 70n, SW = 10n ** W;
+  const ln10 = (LN10 * SW) / 10n ** LN10_DIGITS; // LN10 constant had 1 integer digit + 66 decimals
+  const z = (f * ln10) / D;
+  let term_ = SW, sum = SW;
+  for (let i = 1n; i < 200n; i++) {
+    term_ = (term_ * z) / SW / i;
+    if (term_ === 0n) break;
+    sum += term_;
+  }
+  // mantissa = ym × 10^f  (×10^-K)
+  let mant = (ym * sum) / SW;
+  let exp = ye + t;
+  const ten = 10n * 10n ** K;
+  while (mant >= ten) { mant /= 10n; exp++; }
+  return { neg, mant, K, exp };
+}
+
+function roundDigits(intStr, keep) {
+  // round decimal digit string intStr to `keep` digits (half up), returns {digits, carry}
+  if (intStr.length <= keep) return { digits: intStr.padEnd(keep, "0"), carry: false };
+  let head = BigInt(intStr.slice(0, keep));
+  if (intStr[keep] >= "5") head++;
+  let s = head.toString();
+  if (s.length > keep) return { digits: s.slice(0, keep), carry: true };
+  return { digits: s.padStart(keep, "0"), carry: false };
+}
+
+function fmtSci(neg, digitStr, exp) {
+  // digitStr: significant digits (first nonzero), value = 0.d1d2… ×10^(exp+1)
+  const r = roundDigits(digitStr, 26);
+  if (r.carry) exp++;
+  const e = exp >= 0n ? "+" + exp : exp.toString();
+  return (neg ? "-" : "") + r.digits[0] + "." + r.digits.slice(1) + "E" + e;
+}
+
+function fmt(res) {
+  if (res.sci) {
+    const { neg, mant, exp } = res.sci;
+    return fmtSci(neg, mant.toString(), exp);
+  }
+  const x = res.fixed;
+  const neg = x < 0n;
+  const a = abs(x);
+  if (a > fx(1000000)) {
+    const s = a.toString();
+    return fmtSci(neg, s, BigInt(s.length) - 1n - P);
+  }
+  // fixed with 25 decimals
+  const q = 10n ** (P - 25n);
+  let r = a / q;
+  if ((a % q) * 2n >= q) r++;
+  let s = r.toString().padStart(26, "0");
+  return (neg ? "-" : "") + s.slice(0, -25) + "." + s.slice(-25);
+}
+
+function run(lamStr, idxStr) {
+  const out = [];
+  let lam;
+  try { lam = parseNum(lamStr); } catch (e) { return "Грешка: " + e.message; }
+  if (lam === fx(18)) return "λ = 18 не е допустимо.";
+  const kind = classify(lam);
+  out.push("Граница: " + {
+    "+inf": "+∞ (редицата е разходяща)",
+    "-inf": "-∞ (редицата е разходяща)",
+    "p1": "-9 - √13 ≈ " + fmt({ fixed: P1 }),
+    "p2": "-9 + √13 ≈ " + fmt({ fixed: P2 }),
+  }[kind]);
+  const idx = idxStr.replace(/,/g, " ").split(/\s+/).filter(Boolean).slice(0, 5);
+  for (const s of idx) {
+    if (!/^\d+$/.test(s) || BigInt(s) < 1n) { out.push(s + ": индексът трябва да е цяло число ≥ 1"); continue; }
+    const n = BigInt(s);
+    out.push("a_" + s + " = " + fmt(term(lam, n, kind)));
+  }
+  return out.join("\n");
+}
+
+
+document.getElementById("f").addEventListener("submit", function (e) {
+  e.preventDefault();
+  var out = document.getElementById("out");
+  try {
+    out.textContent = run(document.getElementById("lam").value, document.getElementById("idx").value);
+  } catch (err) {
+    out.textContent = "Грешка: " + err.message;
+  }
+});
+</script>
+</body>
+</html>
